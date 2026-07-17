@@ -614,10 +614,7 @@ function getTodayIndex() {
   // ⚡ Use floor(a/86400000) - floor(b/86400000) NOT floor((a-b)/86400000)
   // The latter shifts the boundary by 8h, causing word to change at 4PM instead of midnight!
   const phtNow = Date.now() + PHT_OFFSET_MS;
-  let idx = Math.floor(phtNow / 86400000) - LAUNCH_EPOCH_DAYS;
-  // TEMP TEST: append ?test to URL to see a different word (remove after testing)
-  if (location.search.includes('test')) idx += 1;
-  return idx;
+  return Math.floor(phtNow / 86400000) - LAUNCH_EPOCH_DAYS;
 }
 function pickDaily() {
   const idx = getTodayIndex() % ANSWERS.length;
