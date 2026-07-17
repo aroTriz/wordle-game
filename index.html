@@ -564,7 +564,9 @@ header h1{
 // Combined valid words set for quick lookup
 let ANSWERS, GUESSES;
 const VALID = new Set();
-let DAILY_POOL = []; // Expanded answer pool (built at init)
+
+// ═══ GAME VERSION — force localStorage clear on update ═══════
+const GAME_VERSION = 2; // Increment to force all players to start fresh
 
 // ─── LAUNCH DATE ─────────────────────────────────────────────
 // Wordle launched June 19, 2021 — resets at 12AM Philippine Time (UTC+8)
@@ -612,10 +614,8 @@ function getTodayIndex() {
   return Math.floor((phtNow - LAUNCH_DATE_MS) / 86400000);
 }
 function pickDaily() {
-  // Use expanded DAILY_POOL for more answer variety (built at init from ANSWERS + common GUESSES)
-  const pool = DAILY_POOL.length > 0 ? DAILY_POOL : ANSWERS;
-  const idx = getTodayIndex() % pool.length;
-  return pool[idx];
+  const idx = getTodayIndex() % ANSWERS.length;
+  return ANSWERS[idx];
 }
 
 // ─── WORD EVALUATION ────────────────────────────────────────
@@ -1095,19 +1095,13 @@ function init() {
   for (const w of ANSWERS) VALID.add(w);
   for (const w of GUESSES) VALID.add(w);
 
-  // Build expanded DAILY_POOL: all original ANSWERS + common 5-letter words from GUESSES
-  // This gives more varied daily puzzles (2309 → ~4500 quality answer words)
-  DAILY_POOL = [...ANSWERS];
-  for (const w of GUESSES) {
-    // Skip obscure words (starting with rare prefixes) and already-added answers
-    if (DAILY_POOL.length >= 5000) break; // Cap at 5000 for variety vs quality balance
-    if (DAILY_POOL.includes(w)) continue;
-    // Skip very obscure words (rare Scrabble words, abbreviations)
-    if (/^[aeiou]/i.test(w) && w.length > 3 && DAILY_POOL.length < 3500) {
-      DAILY_POOL.push(w);
-    } else if (DAILY_POOL.length < 3000) {
-      DAILY_POOL.push(w);
-    }
+  // ═══ VERSION CHECK — clear buggy localStorage from old versions ═══
+  const savedVersion = localStorage.getItem('wordle-version');
+  if (savedVersion !== String(GAME_VERSION)) {
+    // Clear ALL old localStorage data — ensures clean state after update
+    localStorage.removeItem('wordle-game');
+    localStorage.removeItem('wordle-version');
+    localStorage.setItem('wordle-version', String(GAME_VERSION));
   }
 
   // Check for existing game in localStorage (BEFORE setting new word)
@@ -1117,9 +1111,8 @@ function init() {
     try {
       const data = JSON.parse(savedGame);
       const today = getTodayIndex();
-      const expectedSol = pickDaily();
-      // Only restore if: same day AND solution matches (prevents stale save after midnight)
-      if (data.date === today && data.solution === expectedSol) {
+      // Only restore if same day (solution will be correct since gameDate = getTodayIndex)
+      if (data.date === today) {
         state.solution = data.solution;
         state.gameDate = data.date;
         state.guesses = data.guesses || [];
