@@ -571,7 +571,8 @@ const GAME_VERSION = 2; // Increment to force all players to start fresh
 // ─── LAUNCH DATE ─────────────────────────────────────────────
 // Wordle launched June 19, 2021 — resets at 12AM Philippine Time (UTC+8)
 const PHT_OFFSET_MS = 8 * 60 * 60 * 1000; // UTC+8 offset in milliseconds
-const LAUNCH_DATE_MS = Date.UTC(2021, 5, 18, 16); // June 19, 2021 00:00 PHT = June 18, 2021 16:00 UTC
+// Days from epoch to June 19, 2021 00:00 UTC (= midnight PHT on launch day)
+const LAUNCH_EPOCH_DAYS = 18797; // Math.floor(Date.UTC(2021, 5, 19) / 86400000)
 
 // ─── GAME STATE ──────────────────────────────────────────────
 const state = {
@@ -610,8 +611,10 @@ const KEYBOARD = [
 // ─── UTILITY ─────────────────────────────────────────────────
 function getTodayIndex() {
   // Philippine Time (UTC+8) — resets at 12AM PHT
-  const phtNow = Date.now() + PHT_OFFSET_MS; // Shift UTC to PHT
-  return Math.floor((phtNow - LAUNCH_DATE_MS) / 86400000);
+  // ⚡ Use floor(a/86400000) - floor(b/86400000) NOT floor((a-b)/86400000)
+  // The latter shifts the boundary by 8h, causing word to change at 4PM instead of midnight!
+  const phtNow = Date.now() + PHT_OFFSET_MS;
+  return Math.floor(phtNow / 86400000) - LAUNCH_EPOCH_DAYS;
 }
 function pickDaily() {
   const idx = getTodayIndex() % ANSWERS.length;
@@ -985,8 +988,9 @@ function showStats(won) {
   // Next word timer — midnight PHT (UTC+8) — LIVE countdown
   let countdownInterval;
   function updateTimer() {
-    const phtMsSinceMidnight = ((Date.now() + PHT_OFFSET_MS) % 86400000);
-    const secsLeft = Math.max(0, Math.floor((86400000 - phtMsSinceMidnight) / 1000));
+    const phtDayProgress = ((Date.now() + PHT_OFFSET_MS) % 86400000);
+    const secsUntilMidnight = Math.max(0, Math.floor((86400000 - phtDayProgress) / 1000));
+    const secsLeft = secsUntilMidnight >= 86400 ? 0 : secsUntilMidnight;
     const hrs = Math.floor(secsLeft / 3600);
     const mins = Math.floor((secsLeft % 3600) / 60);
     const secs = secsLeft % 60;
