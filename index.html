@@ -614,7 +614,10 @@ function getTodayIndex() {
   // ⚡ Use floor(a/86400000) - floor(b/86400000) NOT floor((a-b)/86400000)
   // The latter shifts the boundary by 8h, causing word to change at 4PM instead of midnight!
   const phtNow = Date.now() + PHT_OFFSET_MS;
-  return Math.floor(phtNow / 86400000) - LAUNCH_EPOCH_DAYS;
+  let idx = Math.floor(phtNow / 86400000) - LAUNCH_EPOCH_DAYS;
+  // TEMP: +1 para makita mo agad ang reset (magsi-shift to "spent") — i-revert ko pag nasabi mo na okay na
+  idx += 1;
+  return idx;
 }
 function pickDaily() {
   const idx = getTodayIndex() % ANSWERS.length;
