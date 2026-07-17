@@ -564,14 +564,17 @@ header h1{
 // Combined valid words set for quick lookup
 let ANSWERS, GUESSES;
 const VALID = new Set();
+let DAILY_POOL = []; // Expanded answer pool (built at init)
 
 // ─── LAUNCH DATE ─────────────────────────────────────────────
-const LAUNCH_DATE = new Date(2021, 5, 19); // Wordle launched June 19, 2021
-const UTC_OFFSET = 8 * 60; // PHT (UTC+8) — resets at 12AM Philippine Time
+// Wordle launched June 19, 2021 — resets at 12AM Philippine Time (UTC+8)
+const PHT_OFFSET_MS = 8 * 60 * 60 * 1000; // UTC+8 offset in milliseconds
+const LAUNCH_DATE_MS = Date.UTC(2021, 5, 18, 16); // June 19, 2021 00:00 PHT = June 18, 2021 16:00 UTC
 
 // ─── GAME STATE ──────────────────────────────────────────────
 const state = {
   solution: '',
+  gameDate: -1,       // Daily index when this game started (-1 = not started)
   guesses: [],        // Array of {word, result[]}
   currentGuess: [],   // Array of 5 chars (current row)
   gameStatus: 'playing', // playing | won | lost
@@ -603,19 +606,16 @@ const KEYBOARD = [
 ];
 
 // ─── UTILITY ─────────────────────────────────────────────────
-function daysSince(date1, date2) {
-  const ms = date2.getTime() - date1.getTime();
-  return Math.floor(ms / (1000 * 60 * 60 * 24));
-}
 function getTodayIndex() {
   // Philippine Time (UTC+8) — resets at 12AM PHT
-  const now = Date.now();
-  const phtNow = now + UTC_OFFSET * 60000; // Shift to PHT directly
-  return Math.floor((phtNow - LAUNCH_DATE.getTime()) / 86400000);
+  const phtNow = Date.now() + PHT_OFFSET_MS; // Shift UTC to PHT
+  return Math.floor((phtNow - LAUNCH_DATE_MS) / 86400000);
 }
 function pickDaily() {
-  const idx = getTodayIndex() % ANSWERS.length;
-  return ANSWERS[idx];
+  // Use expanded DAILY_POOL for more answer variety (built at init from ANSWERS + common GUESSES)
+  const pool = DAILY_POOL.length > 0 ? DAILY_POOL : ANSWERS;
+  const idx = getTodayIndex() % pool.length;
+  return pool[idx];
 }
 
 // ─── WORD EVALUATION ────────────────────────────────────────
@@ -860,7 +860,7 @@ function handleKey(key) {
   }
 }
 
-function submitGuess() {
+async function submitGuess() {
   const guess = state.currentGuess.join('');
   if (guess.length !== 5) {
     showToast('Not enough letters');
@@ -868,9 +868,26 @@ function submitGuess() {
     return;
   }
   if (!VALID.has(guess)) {
-    showToast('Not in word list');
-    animateRowShake(state.guesses.length);
-    return;
+    // Dictionary API fallback: check if it's a real English word
+    showToast('Checking dictionary...');
+    state.isAnimating = true;
+    try {
+      const resp = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${guess}`);
+      if (!resp.ok) {
+        state.isAnimating = false;
+        showToast('Not in word list');
+        animateRowShake(state.guesses.length);
+        return;
+      }
+      // Valid word found! Add it to the valid set for future checks
+      VALID.add(guess);
+      state.isAnimating = false;
+    } catch(e) {
+      state.isAnimating = false;
+      showToast('Not in word list');
+      animateRowShake(state.guesses.length);
+      return;
+    }
   }
 
   state.isAnimating = true;
@@ -968,8 +985,7 @@ function showStats(won) {
   // Next word timer — midnight PHT (UTC+8) — LIVE countdown
   let countdownInterval;
   function updateTimer() {
-    const now = Date.now();
-    const phtMsSinceMidnight = ((now + UTC_OFFSET * 60000) % 86400000);
+    const phtMsSinceMidnight = ((Date.now() + PHT_OFFSET_MS) % 86400000);
     const secsLeft = Math.max(0, Math.floor((86400000 - phtMsSinceMidnight) / 1000));
     const hrs = Math.floor(secsLeft / 3600);
     const mins = Math.floor((secsLeft % 3600) / 60);
@@ -1075,13 +1091,67 @@ function init() {
   // Load stats
   loadStats();
 
-  // Pick today's word
-  state.solution = pickDaily();
-  console.log('Wordle', getTodayIndex(), ':', state.solution); // Dev only
-
   // Combine word lists
   for (const w of ANSWERS) VALID.add(w);
   for (const w of GUESSES) VALID.add(w);
+
+  // Build expanded DAILY_POOL: all original ANSWERS + common 5-letter words from GUESSES
+  // This gives more varied daily puzzles (2309 → ~4500 quality answer words)
+  DAILY_POOL = [...ANSWERS];
+  for (const w of GUESSES) {
+    // Skip obscure words (starting with rare prefixes) and already-added answers
+    if (DAILY_POOL.length >= 5000) break; // Cap at 5000 for variety vs quality balance
+    if (DAILY_POOL.includes(w)) continue;
+    // Skip very obscure words (rare Scrabble words, abbreviations)
+    if (/^[aeiou]/i.test(w) && w.length > 3 && DAILY_POOL.length < 3500) {
+      DAILY_POOL.push(w);
+    } else if (DAILY_POOL.length < 3000) {
+      DAILY_POOL.push(w);
+    }
+  }
+
+  // Check for existing game in localStorage (BEFORE setting new word)
+  const savedGame = localStorage.getItem('wordle-game');
+  let restored = false;
+  if (savedGame) {
+    try {
+      const data = JSON.parse(savedGame);
+      const today = getTodayIndex();
+      const expectedSol = pickDaily();
+      // Only restore if: same day AND solution matches (prevents stale save after midnight)
+      if (data.date === today && data.solution === expectedSol) {
+        state.solution = data.solution;
+        state.gameDate = data.date;
+        state.guesses = data.guesses || [];
+        state.currentGuess = data.currentGuess || [];
+        state.gameStatus = data.gameStatus || 'playing';
+        state.keyStates = data.keyStates || {};
+        // Rebuild keyboard states from guesses
+        for (const g of state.guesses) {
+          for (let c = 0; c < 5; c++) {
+            updateKeyState(g.word[c], g.result[c]);
+          }
+        }
+        restored = true;
+      } else {
+        // Stale save from previous day — remove it
+        localStorage.removeItem('wordle-game');
+      }
+    } catch(e) {
+      localStorage.removeItem('wordle-game');
+    }
+  }
+
+  // If no valid saved game, start fresh with today's word
+  if (!restored) {
+    state.solution = pickDaily();
+    state.gameDate = getTodayIndex();
+    state.guesses = [];
+    state.currentGuess = [];
+    state.gameStatus = 'playing';
+    state.keyStates = {};
+    console.log('Wordle', state.gameDate, ':', state.solution); // Dev only
+  }
 
   renderBoard();
   renderKeyboard();
@@ -1109,41 +1179,13 @@ function init() {
       }
     });
   });
-
-  // Check for existing game in localStorage
-  const savedGame = localStorage.getItem('wordle-game');
-  if (savedGame) {
-    try {
-      const data = JSON.parse(savedGame);
-      if (data.date === getTodayIndex()) {
-        // Restore game state
-        state.solution = data.solution;
-        state.guesses = data.guesses || [];
-        state.currentGuess = data.currentGuess || [];
-        state.gameStatus = data.gameStatus || 'playing';
-        state.keyStates = data.keyStates || {};
-        // Rebuild keyboard states from guesses
-        for (const g of state.guesses) {
-          for (let c = 0; c < 5; c++) {
-            updateKeyState(g.word[c], g.result[c]);
-          }
-        }
-        renderBoard();
-        renderKeyboard();
-
-        // If game is over, show stats
-        if (state.gameStatus === 'won' || state.gameStatus === 'lost') {
-          setTimeout(() => showStats(state.gameStatus === 'won'), 500);
-        }
-      }
-    } catch(e) {}
-  }
 }
 
 // ─── SAVE GAME STATE ─────────────────────────────────────────
 function saveGame() {
+  if (state.gameDate < 0) return; // Don't save until game is initialized
   const data = {
-    date: getTodayIndex(),
+    date: state.gameDate, // ⚡ Use the game's start date, NOT current date
     solution: state.solution,
     guesses: state.guesses,
     currentGuess: state.currentGuess,
@@ -1158,6 +1200,28 @@ function saveGame() {
 // Auto-save every 5 seconds and on page unload
 setInterval(saveGame, 5000);
 window.addEventListener('beforeunload', saveGame);
+
+// ─── LIVE DAY ROLLOVER DETECTION ────────────────────────────
+// Checks every second if the PHT day changed — auto-resets without refresh
+let dayCheckInterval = setInterval(() => {
+  if (state.gameDate < 0) return;
+  const todayIdx = getTodayIndex();
+  if (todayIdx !== state.gameDate) {
+    // Day rollover! Reset the game with new word
+    const newSolution = pickDaily();
+    state.gameDate = todayIdx;
+    state.solution = newSolution;
+    state.guesses = [];
+    state.currentGuess = [];
+    state.gameStatus = 'playing';
+    state.keyStates = {};
+    state.tileStates = Array.from({length:6}, () => Array(5).fill('empty'));
+    try { localStorage.removeItem('wordle-game'); } catch(e) {}
+    renderBoard();
+    renderKeyboard();
+    showToast('New word available!', 2000);
+  }
+}, 1000);
 
 // Start the game after DOM is ready
 document.addEventListener('DOMContentLoaded', init);
